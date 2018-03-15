@@ -2,13 +2,14 @@ package gtm
 
 import (
 	"fmt"
-	"github.com/serialx/hashring"
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/serialx/hashring"
+	"gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 )
 
 type OrderingGuarantee int
@@ -193,6 +194,8 @@ func (this *OpBuf) IsFull() bool {
 }
 
 func (this *OpBuf) Flush(session *mgo.Session, ctx *OpCtx) {
+	s := session.Copy()
+	defer func() { s.Close() }()
 	if len(this.Entries) == 0 {
 		return
 	}
@@ -210,7 +213,7 @@ func (this *OpBuf) Flush(session *mgo.Session, ctx *OpCtx) {
 		var results []map[string]interface{}
 		db, col := parts[0], parts[1]
 		sel := bson.M{"_id": bson.M{"$in": opIds}}
-		collection := session.DB(db).C(col)
+		collection := s.DB(db).C(col)
 		err := collection.Find(sel).All(&results)
 		if err == nil {
 			for _, result := range results {
@@ -231,6 +234,10 @@ func (this *OpBuf) Flush(session *mgo.Session, ctx *OpCtx) {
 			}
 		} else {
 			ctx.ErrC <- err
+			if s.Ping() != nil {
+				s.Close()
+				s = session.Copy()
+			}
 		}
 	}
 	for _, op := range this.Entries {
@@ -333,7 +340,7 @@ func GetOpLogQuery(session *mgo.Session, after bson.MongoTimestamp, options *Opt
 func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Options) error {
 	defer ctx.allWg.Done()
 	s := session.Copy()
-	defer s.Close()
+	defer func() { s.Close() }()
 	options.Fill(s)
 	duration, err := time.ParseDuration(*options.CursorTimeout)
 	if err != nil {
@@ -379,9 +386,8 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 				currTimestamp = op.Timestamp
 			}
 		}
-		if err = iter.Close(); err != nil {
+		if err = iter.Err(); err != nil {
 			ctx.ErrC <- err
-			return err
 		}
 		if iter.Timeout() {
 			select {
@@ -401,6 +407,12 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 				continue
 			}
 		}
+		if s.Ping() != nil {
+			s.Close()
+			s = session.Copy()
+			options.Fill(s)
+		}
+
 		iter = GetOpLogQuery(s, currTimestamp, options).Tail(duration)
 	}
 	return nil
