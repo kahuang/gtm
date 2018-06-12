@@ -60,7 +60,7 @@ type Op struct {
 	Timestamp bson.MongoTimestamp    `json:"timestamp"`
 	Source    QuerySource            `json:"source"`
 	Doc       interface{}            `json:"doc,omitempty"`
-	DataSize  int64                  `json:"data_size"`
+	DataSize  int                    `json:"data_size"`
 }
 
 type OpLog struct {
