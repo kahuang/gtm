@@ -2,16 +2,17 @@ package gtm
 
 import (
 	"fmt"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
-	"github.com/pkg/errors"
-	"github.com/serialx/hashring"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
+	"github.com/pkg/errors"
+	"github.com/serialx/hashring"
 )
 
 type OrderingGuarantee int
@@ -59,6 +60,7 @@ type Op struct {
 	Timestamp bson.MongoTimestamp    `json:"timestamp"`
 	Source    QuerySource            `json:"source"`
 	Doc       interface{}            `json:"doc,omitempty"`
+	DataSize  int                    `json:"data_size"`
 }
 
 type OpLog struct {
@@ -661,9 +663,10 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 	currTimestamp := options.After(s, options)
 	iter := GetOpLogQuery(s, currTimestamp, options).Tail(duration)
 	for {
+		var rawBson bson.Raw
 		var entry OpLog
 	Seek:
-		for iter.Next(&entry) {
+		for iter.Next(&rawBson) {
 			op := &Op{
 				Id:        "",
 				Operation: "",
@@ -671,18 +674,24 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 				Data:      nil,
 				Timestamp: bson.MongoTimestamp(0),
 				Source:    OplogQuerySource,
+				DataSize:  len(rawBson.Data),
 			}
-			ok, err := op.ParseLogEntry(&entry, options)
+			ok, err := rawBson.Unmarshal(&entry)
 			if err == nil {
-				if ok && op.matchesFilter(options) {
-					if options.UpdateDataAsDelta {
-						ctx.OpC <- op
-					} else {
-						// broadcast to fetch channels
-						for _, channel := range channels {
-							channel <- op
+				ok, err = op.ParseLogEntry(&entry, options)
+				if err == nil {
+					if ok && op.matchesFilter(options) {
+						if options.UpdateDataAsDelta {
+							ctx.OpC <- op
+						} else {
+							// broadcast to fetch channels
+							for _, channel := range channels {
+								channel <- op
+							}
 						}
 					}
+				} else {
+					ctx.ErrC <- err
 				}
 			} else {
 				ctx.ErrC <- err
