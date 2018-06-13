@@ -43,6 +43,7 @@ type Op struct {
 	Namespace string                 `json:"namespace"`
 	Data      map[string]interface{} `json:"data"`
 	Timestamp bson.MongoTimestamp    `json:"timestamp"`
+	DataSize  int                    `json:"data_size"`
 }
 
 type OpLog struct {
@@ -349,18 +350,22 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 	currTimestamp := options.After(s, options)
 	iter := GetOpLogQuery(s, currTimestamp, options).Tail(duration)
 	for {
+		var bsonRaw bson.Raw
 		entry := make(OpLogEntry)
 	Seek:
-		for iter.Next(entry) {
-			op := &Op{"", "", "", nil, bson.MongoTimestamp(0)}
-			if op.ParseLogEntry(entry, options) {
-				if options.Filter == nil || options.Filter(op) {
-					if options.UpdateDataAsDelta {
-						ctx.OpC <- op
-					} else {
-						// broadcast to fetch channels
-						for _, channel := range channels {
-							channel <- op
+		for iter.Next(&bsonRaw) {
+			op := &Op{"", "", "", nil, bson.MongoTimestamp(0), len(bsonRaw.Data)}
+			err := bsonRaw.Unmarshal(entry)
+			if err == nil {
+				if op.ParseLogEntry(entry, options) {
+					if options.Filter == nil || options.Filter(op) {
+						if options.UpdateDataAsDelta {
+							ctx.OpC <- op
+						} else {
+							// broadcast to fetch channels
+							for _, channel := range channels {
+								channel <- op
+							}
 						}
 					}
 				}
