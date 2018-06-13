@@ -676,10 +676,8 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 				Source:    OplogQuerySource,
 				DataSize:  len(rawBson.Data),
 			}
-			ok, err := rawBson.Unmarshal(&entry)
-			if err == nil {
-				ok, err = op.ParseLogEntry(&entry, options)
-				if err == nil {
+			if err := rawBson.Unmarshal(&entry); err == nil {
+				if ok, err := op.ParseLogEntry(&entry, options); err == nil {
 					if ok && op.matchesFilter(options) {
 						if options.UpdateDataAsDelta {
 							ctx.OpC <- op
