@@ -3,6 +3,7 @@ package gtm
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -50,6 +51,7 @@ type Options struct {
 	DirectReadCursors   int
 	Unmarshal           DataUnmarshaller
 	Log                 *log.Logger
+	MaxBackoffTime      time.Duration
 }
 
 type Op struct {
@@ -662,6 +664,7 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 	}
 	currTimestamp := options.After(s, options)
 	iter := GetOpLogQuery(s, currTimestamp, options).Tail(duration)
+	numConsecutiveErrors := 0
 	for {
 		var rawBson bson.Raw
 		var entry OpLog
@@ -688,11 +691,14 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 							}
 						}
 					}
+					numConsecutiveErrors = 0
 				} else {
 					ctx.ErrC <- err
+					numConsecutiveErrors += 1
 				}
 			} else {
 				ctx.ErrC <- err
+				numConsecutiveErrors += 1
 			}
 			select {
 			case <-ctx.stopC:
@@ -714,9 +720,17 @@ func TailOps(ctx *OpCtx, session *mgo.Session, channels []OpChan, options *Optio
 			default:
 				currTimestamp = op.Timestamp
 			}
+			if numConsecutiveErrors > 0 {
+				if sleepTime := time.Duration(int(math.Pow(float64(2), float64(numConsecutiveErrors)))) * time.Millisecond; sleepTime > options.MaxBackoffTime {
+					time.Sleep(options.MaxBackoffTime)
+				} else {
+					time.Sleep(sleepTime)
+				}
+			}
 		}
 		if err = iter.Close(); err != nil {
 			ctx.ErrC <- errors.Wrap(err, "Error tailing oplog entries")
+			numConsecutiveErrors += 1
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go ctx.waitForConnection(&wg, s, options)
@@ -1008,6 +1022,7 @@ func DefaultOptions() *Options {
 		DirectReadCursors:   10,
 		Unmarshal:           defaultUnmarshaller,
 		Log:                 log.New(os.Stdout, "INFO ", log.Flags()),
+		MaxBackoffTime:      time.Duration(30) * time.Second,
 	}
 }
 
